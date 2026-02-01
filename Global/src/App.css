@@ -1,0 +1,10 @@
+.app {
+  width: 100vw;
+  height: 100vh;
+}
+
+.globe {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
