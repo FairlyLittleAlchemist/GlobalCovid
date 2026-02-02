@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import DeckGL from '@deck.gl/react'
 import { AmbientLight, PointLight, LightingEffect } from '@deck.gl/core'
 import { HexagonLayer } from '@deck.gl/aggregation-layers'
+import { ScatterplotLayer, ArcLayer, GeoJsonLayer, TextLayer } from '@deck.gl/layers'
 import { Map } from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './App.css'
@@ -29,7 +30,7 @@ const REGIONS = [
 ]
 
 const INITIAL_VIEW_STATE = {
-  longitude: 25.5, // Finland center-ish
+  longitude: 25.5,
   latitude: 64,
   zoom: 4.3,
   minZoom: 3.5,
@@ -50,6 +51,7 @@ const colorRange = [
   [209, 55, 78],
 ]
 
+// ---- Lighting
 const ambientLight = new AmbientLight({
   color: [255, 255, 255],
   intensity: 1.0,
@@ -69,28 +71,38 @@ const pointLight2 = new PointLight({
 
 const lightingEffect = new LightingEffect({ ambientLight, pointLight1, pointLight2 })
 
-function getTooltip({ object }) {
+// ---- Tooltip
+function getTooltip({ object, layer }) {
   if (!object) return null
+
+  if (layer?.id === 'region-nodes') {
+    return `${object.region}\nlat: ${object.lat.toFixed(4)}\nlng: ${object.lng.toFixed(4)}`
+  }
+
+  if (layer?.id === 'region-edges') {
+    return `${object.source} → ${object.target}\nweight: ${object.weight.toFixed(3)}`
+  }
+
+  // Hex tooltip fallback
   const [lng, lat] = object.position
   const count = object.count
   const weightSum = object.points?.reduce((sum, p) => sum + (p.weight || 1), 0) ?? count
-  return `lat: ${lat.toFixed(4)}\nlng: ${lng.toFixed(4)}\ncount: ${count}\nweight sum: ${weightSum.toFixed(
-    2
-  )}`
+  return `lat: ${lat.toFixed(4)}\nlng: ${lng.toFixed(4)}\ncount: ${count}\nweight sum: ${weightSum.toFixed(2)}`
 }
 
+// ---- Deterministic RNG
 function seededRandom(seed) {
   const x = Math.sin(seed * 12.9898) * 43758.5453
-  return (x - Math.floor(x)) + 1e-9 // avoid zero
+  return (x - Math.floor(x)) + 1e-9
 }
 
 function seededGaussian(seed, mean = 0, std = 1) {
-  // Box–Muller using deterministic seeds
   const u = seededRandom(seed)
   const v = seededRandom(seed + 1)
   return mean + std * Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v)
 }
 
+// ---- Heatmap demo data
 function makeGaussianCloud(regions, samplesPerRegion, sigmaKm) {
   const kmPerDegLat = 111
   const points = []
@@ -112,6 +124,52 @@ function makeGaussianCloud(regions, samplesPerRegion, sigmaKm) {
   return points
 }
 
+// ---- Region-to-region edges (deterministic demo)
+function haversineKm(a, b) {
+  const toRad = (d) => (d * Math.PI) / 180
+  const R = 6371
+  const dLat = toRad(b.lat - a.lat)
+  const dLon = toRad(b.lng - a.lng)
+  const lat1 = toRad(a.lat)
+  const lat2 = toRad(b.lat)
+
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
+
+  return 2 * R * Math.asin(Math.sqrt(h))
+}
+
+function makeEdges(regions, maxEdgesPerNode = 3) {
+  const edges = []
+  regions.forEach((src, i) => {
+    const nearest = regions
+      .map((tgt, j) => {
+        if (i === j) return null
+        const d = haversineKm(src, tgt)
+        return { src, tgt, d }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, maxEdgesPerNode)
+
+    nearest.forEach((x, k) => {
+      const noise = seededRandom(i * 999 + k * 77)
+      const w = Math.exp(-(x.d ** 2) / (2 * 350 ** 2)) * (0.6 + 0.4 * noise)
+      edges.push({
+        source: x.src.region,
+        target: x.tgt.region,
+        sourceLat: x.src.lat,
+        sourceLng: x.src.lng,
+        targetLat: x.tgt.lat,
+        targetLng: x.tgt.lng,
+        weight: w,
+      })
+    })
+  })
+  return edges
+}
+
 function App() {
   const [radius, setRadius] = useState(18000)
   const [upperPercentile, setUpperPercentile] = useState(98)
@@ -120,13 +178,97 @@ function App() {
   const [sigmaKm, setSigmaKm] = useState(70)
   const [samplesPerRegion, setSamplesPerRegion] = useState(140)
 
+  const [showEdges, setShowEdges] = useState(true)
+  const [edgesPerNode, setEdgesPerNode] = useState(3)
+
+  // Finland outline GeoJSON loaded from /public
+  const [finlandGeoJson, setFinlandGeoJson] = useState(null)
+
+  useEffect(() => {
+    fetch('/finland.geojson')
+      .then((r) => r.json())
+      .then(setFinlandGeoJson)
+      .catch(() => setFinlandGeoJson(null))
+  }, [])
+
   const data = useMemo(
     () => makeGaussianCloud(REGIONS, samplesPerRegion, sigmaKm),
     [dataVersion, samplesPerRegion, sigmaKm]
   )
 
+  const edges = useMemo(() => makeEdges(REGIONS, edgesPerNode), [edgesPerNode])
+
   const layers = useMemo(() => {
-    return [
+    const baseLayers = []
+
+    // FINLAND label (bold white uppercase)
+    baseLayers.push(
+      new TextLayer({
+        id: 'finland-label',
+        data: [{ text: 'FINLAND', position: [26.0, 64.5] }],
+        getText: (d) => d.text,
+        getPosition: (d) => d.position,
+        getSize: 24,
+        sizeUnits: 'pixels',
+        getColor: [255, 255, 255, 240],
+        fontFamily: 'sans-serif',
+        fontWeight: 900,
+        billboard: true,
+        pickable: false,
+        background: true,
+        getBackgroundColor: [0, 0, 0, 110],
+      })
+    )
+
+   // Finland fill (Google-like)
+if (finlandGeoJson) {
+  baseLayers.push(
+    new GeoJsonLayer({
+      id: 'finland-fill',
+      data: finlandGeoJson,
+      filled: true,
+      stroked: false,
+      getFillColor: [240, 180, 90, 120], // warm fill
+      pickable: false,
+    })
+  )
+}
+
+// Finland outline (clean blue)
+if (finlandGeoJson) {
+  baseLayers.push(
+    new GeoJsonLayer({
+      id: 'finland-outline',
+      data: finlandGeoJson,
+      filled: false,
+      stroked: true,
+      getLineColor: [0, 140, 255, 230],
+      lineWidthMinPixels: 2,
+      pickable: false,
+    })
+  )
+}
+
+
+    // Optional region edges
+    if (showEdges) {
+      baseLayers.push(
+        new ArcLayer({
+          id: 'region-edges',
+          data: edges,
+          pickable: true,
+          getSourcePosition: (d) => [d.sourceLng, d.sourceLat],
+          getTargetPosition: (d) => [d.targetLng, d.targetLat],
+          getWidth: (d) => 1 + 6 * d.weight,
+          widthUnits: 'pixels',
+          getSourceColor: [150, 150, 150, 140],
+          getTargetColor: [150, 150, 150, 140],
+        })
+      )
+    }
+
+    // Heatmap (existing)
+    baseLayers.push(
       new HexagonLayer({
         id: 'heatmap',
         data,
@@ -150,9 +292,27 @@ function App() {
         transitions: {
           elevationScale: 3000,
         },
-      }),
-    ]
-  }, [data, coverage, radius, upperPercentile])
+      })
+    )
+
+    // Region nodes
+    baseLayers.push(
+      new ScatterplotLayer({
+        id: 'region-nodes',
+        data: REGIONS,
+        pickable: true,
+        getPosition: (d) => [d.lng, d.lat],
+        getRadius: 18000,
+        radiusUnits: 'meters',
+        getFillColor: [255, 255, 255, 180],
+        getLineColor: [0, 0, 0, 220],
+        lineWidthMinPixels: 1,
+        stroked: true,
+      })
+    )
+
+    return baseLayers
+  }, [data, coverage, radius, upperPercentile, edges, showEdges, edgesPerNode, finlandGeoJson])
 
   return (
     <div className="app">
@@ -168,6 +328,30 @@ function App() {
 
       <div className="debug-panel">
         <div className="debug-row">
+          <label>Show edges</label>
+          <input
+            type="checkbox"
+            checked={showEdges}
+            onChange={(e) => setShowEdges(e.target.checked)}
+          />
+          <span>{showEdges ? 'On' : 'Off'}</span>
+        </div>
+
+        <div className="debug-row">
+          <label htmlFor="edgesPerNode">Edges/node</label>
+          <input
+            id="edgesPerNode"
+            type="range"
+            min="1"
+            max="8"
+            step="1"
+            value={edgesPerNode}
+            onChange={(e) => setEdgesPerNode(Number(e.target.value))}
+          />
+          <span>{edgesPerNode}</span>
+        </div>
+
+        <div className="debug-row">
           <label htmlFor="radius">Hex radius (m)</label>
           <input
             id="radius"
@@ -180,6 +364,7 @@ function App() {
           />
           <span>{radius.toLocaleString()} m</span>
         </div>
+
         <div className="debug-row">
           <label htmlFor="upper">Upper %</label>
           <input
@@ -193,6 +378,7 @@ function App() {
           />
           <span>{upperPercentile}%</span>
         </div>
+
         <div className="debug-row">
           <label htmlFor="coverage">Coverage</label>
           <input
@@ -206,6 +392,7 @@ function App() {
           />
           <span>{coverage.toFixed(2)}</span>
         </div>
+
         <div className="debug-row">
           <label htmlFor="sigma">Sigma (km)</label>
           <input
@@ -219,6 +406,7 @@ function App() {
           />
           <span>{sigmaKm} km</span>
         </div>
+
         <div className="debug-row">
           <label htmlFor="samples">Samples/region</label>
           <input
@@ -232,6 +420,7 @@ function App() {
           />
           <span>{samplesPerRegion}</span>
         </div>
+
         <button
           type="button"
           onClick={() => setDataVersion((n) => n + 1)}
@@ -246,6 +435,15 @@ function App() {
         >
           Regenerate weights
         </button>
+
+        <div style={{ marginTop: '0.75rem', opacity: 0.8, fontSize: '0.85rem', lineHeight: 1.35 }}>
+          <div>
+            <b>Note:</b> Add a file <code>public/finland_outline.geojson</code> to enable the blue outline.
+          </div>
+          <div>
+            If it’s missing, the app still runs — only the outline won’t show.
+          </div>
+        </div>
       </div>
     </div>
   )
