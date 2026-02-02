@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import DeckGL from '@deck.gl/react'
 import { AmbientLight, PointLight, LightingEffect } from '@deck.gl/core'
 import { HexagonLayer } from '@deck.gl/aggregation-layers'
 import { Map } from 'react-map-gl/maplibre'
+import { load } from '@loaders.gl/core'
+import { CSVLoader } from '@loaders.gl/csv'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './App.css'
 
@@ -40,6 +42,8 @@ const INITIAL_VIEW_STATE = {
 
 const MAP_STYLE =
   'https://basemaps.cartocdn.com/gl/dark-matter-nolabels-gl-style/style.json'
+
+const CITIES_CSV_URL = '/fi.csv'
 
 const colorRange = [
   [1, 152, 189],
@@ -119,11 +123,27 @@ function App() {
   const [dataVersion, setDataVersion] = useState(0)
   const [sigmaKm, setSigmaKm] = useState(70)
   const [samplesPerRegion, setSamplesPerRegion] = useState(140)
+  const [mode, setMode] = useState('regions') // 'regions' | 'cities'
+  const [cityData, setCityData] = useState([])
 
-  const data = useMemo(
-    () => makeGaussianCloud(REGIONS, samplesPerRegion, sigmaKm),
-    [dataVersion, samplesPerRegion, sigmaKm]
-  )
+  useEffect(() => {
+    load(CITIES_CSV_URL, CSVLoader).then((res) => {
+      const rows = res?.data ?? res ?? []
+      const pts = rows
+        .map((r) => ({
+          position: [Number(r.lng), Number(r.lat)],
+          weight: Number(r.population) || 1,
+          city: r.city,
+        }))
+        .filter((p) => Number.isFinite(p.position[0]) && Number.isFinite(p.position[1]))
+      setCityData(pts)
+    })
+  }, [])
+
+  const data = useMemo(() => {
+    if (mode === 'cities') return cityData
+    return makeGaussianCloud(REGIONS, samplesPerRegion, sigmaKm)
+  }, [mode, cityData, samplesPerRegion, sigmaKm, dataVersion])
 
   const layers = useMemo(() => {
     return [
@@ -179,6 +199,32 @@ function App() {
             onChange={(e) => setRadius(Number(e.target.value))}
           />
           <span>{radius.toLocaleString()} m</span>
+        </div>
+        <div className="debug-row">
+          <label>Dataset</label>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <label>
+              <input
+                type="radio"
+                name="mode"
+                value="regions"
+                checked={mode === 'regions'}
+                onChange={() => setMode('regions')}
+              />{' '}
+              Regions
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="mode"
+                value="cities"
+                checked={mode === 'cities'}
+                onChange={() => setMode('cities')}
+              />{' '}
+              Cities
+            </label>
+          </div>
+          <span />
         </div>
         <div className="debug-row">
           <label htmlFor="upper">Upper %</label>
