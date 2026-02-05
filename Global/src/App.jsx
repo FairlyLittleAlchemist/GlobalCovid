@@ -109,7 +109,8 @@ function makeGaussianCloud(regions, samplesPerRegion, sigmaKm) {
       const lat = r.lat + dLat
       const lng = r.lng + dLon
       const radialKm = Math.sqrt((dLat * kmPerDegLat) ** 2 + (dLon * kmPerDegLat * cosLat) ** 2)
-      const weight = Math.exp(-(radialKm ** 2) / (2 * sigmaKm ** 2))
+      const base = r.weight ?? 1
+      const weight = base * Math.exp(-(radialKm ** 2) / (2 * sigmaKm ** 2))
       points.push({ position: [lng, lat], weight })
     }
   })
@@ -140,10 +141,20 @@ function App() {
     })
   }, [])
 
+  const centers = useMemo(() => {
+    if (mode === 'cities') {
+      return cityData.map((c, idx) => ({
+        lat: c.position[1],
+        lng: c.position[0],
+        weight: 0.5 + seededRandom(idx + 1) * 1.5, // random amplitude
+      }))
+    }
+    return REGIONS.map((r) => ({ ...r, weight: 1 }))
+  }, [mode, cityData])
+
   const data = useMemo(() => {
-    if (mode === 'cities') return cityData
-    return makeGaussianCloud(REGIONS, samplesPerRegion, sigmaKm)
-  }, [mode, cityData, samplesPerRegion, sigmaKm, dataVersion])
+    return makeGaussianCloud(centers, samplesPerRegion, sigmaKm)
+  }, [centers, samplesPerRegion, sigmaKm, dataVersion])
 
   const layers = useMemo(() => {
     return [
