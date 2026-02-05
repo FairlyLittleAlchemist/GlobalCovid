@@ -38,8 +38,8 @@ export default function MapView() {
 
   const [controlsOpen, setControlsOpen] = useState(true)
 
-  // ✅ hover state (for realtime tooltip)
-  const [hover, setHover] = useState(null) // { x, y, node_id } or null
+  // hover state for realtime tooltip
+  const [hover, setHover] = useState(null) // { x, y, node_id } | null
 
   // map controls
   const [radius, setRadius] = useState(1500)
@@ -53,17 +53,18 @@ export default function MapView() {
   const finlandGeoJson = useFinlandGeoJson('/finland.geojson')
   const simulationEnabled = !!selectedDisease
 
+  // IMPORTANT: no autoplay before selecting a disease
   useEffect(() => {
-    if (selectedDisease) setPlaying(true)
-    else setPlaying(false)
+    setPlaying(false)
   }, [selectedDisease])
 
+  // RAF loop for animTime (moving dots)
   useEffect(() => {
     let raf = 0
-    let start = performance.now()
+    const start = performance.now()
 
     function loop(now) {
-      const t = (now - start) / 1000
+      const t = (now - start) / 1000 // seconds
       setAnimTime(simulationEnabled && playing ? t : 0)
       raf = requestAnimationFrame(loop)
     }
@@ -113,19 +114,16 @@ export default function MapView() {
     ]
   )
 
-  // ✅ derive live hovered node data from simFrame (updates every day automatically)
+  // hovered node derived from simFrame (updates automatically when day changes)
   const hoveredNode = useMemo(() => {
     if (!hover?.node_id) return null
     return simFrame.get(hover.node_id) || null
   }, [hover?.node_id, simFrame])
 
-  // ✅ fallback label for hovered node (REGIONS index mapping)
   const hoveredLabel = useMemo(() => {
     if (!hover?.node_id) return ''
-    // try find in simFrame
     const v = simFrame.get(hover.node_id)
     if (v?.node_name) return v.node_name
-    // else just show node_id
     return String(hover.node_id)
   }, [hover?.node_id, simFrame])
 
@@ -135,7 +133,6 @@ export default function MapView() {
         layers={layers}
         initialViewState={INITIAL_VIEW_STATE}
         controller
-        // ✅ capture hover and keep it, so tooltip can update without moving mouse
         onHover={(info) => {
           const obj = info?.object
           if (obj && obj.__type === 'node') {
@@ -148,7 +145,7 @@ export default function MapView() {
         <MapGL reuseMaps mapStyle={MAP_STYLE} />
       </DeckGL>
 
-      {/* ✅ REAL-TIME TOOLTIP (updates when simDay/simFrame changes) */}
+      {/* REALTIME TOOLTIP */}
       {hover && (
         <div
           style={{
@@ -162,7 +159,7 @@ export default function MapView() {
             border: '1px solid rgba(255,255,255,0.18)',
             borderRadius: 12,
             padding: '10px 12px',
-            width: 260,
+            width: 270,
             fontSize: 12,
             lineHeight: 1.35,
             backdropFilter: 'blur(8px)',
@@ -233,11 +230,13 @@ export default function MapView() {
 
         <div style={{ marginTop: 14 }}>
           <SimulationPlayer
-            url="/merged_gleam_data.csv"
-            fps={6}
             enabled={simulationEnabled}
+            selectedDisease={selectedDisease} // UI only
             playing={playing}
             onPlayingChange={setPlaying}
+            fps={6}
+            startingNodeName="Helsinki"
+            daysToSimulate={50}
             onFrame={({ day, frame }) => {
               setSimDay(day)
               setSimFrame(frame)
@@ -285,42 +284,84 @@ export default function MapView() {
 
         <div className="row">
           <label>Show edges</label>
-          <input type="checkbox" checked={showEdges} onChange={(e) => setShowEdges(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={showEdges}
+            onChange={(e) => setShowEdges(e.target.checked)}
+          />
         </div>
 
         <div className="row">
           <label>Edges/node</label>
-          <input type="range" min="1" max="8" value={edgesPerNode} onChange={(e) => setEdgesPerNode(+e.target.value)} />
+          <input
+            type="range"
+            min="1"
+            max="8"
+            value={edgesPerNode}
+            onChange={(e) => setEdgesPerNode(+e.target.value)}
+          />
           <span>{edgesPerNode}</span>
         </div>
 
         <div className="row">
           <label>Hex radius (m)</label>
-          <input type="range" min="500" max="5000" value={radius} onChange={(e) => setRadius(+e.target.value)} />
+          <input
+            type="range"
+            min="500"
+            max="5000"
+            value={radius}
+            onChange={(e) => setRadius(+e.target.value)}
+          />
           <span>{radius}</span>
         </div>
 
         <div className="row">
           <label>Upper %</label>
-          <input type="range" min="50" max="100" value={upperPercentile} onChange={(e) => setUpperPercentile(+e.target.value)} />
+          <input
+            type="range"
+            min="50"
+            max="100"
+            value={upperPercentile}
+            onChange={(e) => setUpperPercentile(+e.target.value)}
+          />
           <span>{upperPercentile}</span>
         </div>
 
         <div className="row">
           <label>Coverage</label>
-          <input type="range" min="0.5" max="1" step="0.01" value={coverage} onChange={(e) => setCoverage(+e.target.value)} />
+          <input
+            type="range"
+            min="0.5"
+            max="1"
+            step="0.01"
+            value={coverage}
+            onChange={(e) => setCoverage(+e.target.value)}
+          />
           <span>{coverage.toFixed(2)}</span>
         </div>
 
         <div className="row">
           <label>Sigma (km)</label>
-          <input type="range" min="20" max="150" value={sigmaKm} onChange={(e) => setSigmaKm(+e.target.value)} />
+          <input
+            type="range"
+            min="20"
+            max="150"
+            value={sigmaKm}
+            onChange={(e) => setSigmaKm(+e.target.value)}
+          />
           <span>{sigmaKm}</span>
         </div>
 
         <div className="row">
           <label>Samples/region</label>
-          <input type="range" min="20" max="300" step="10" value={samplesPerRegion} onChange={(e) => setSamplesPerRegion(+e.target.value)} />
+          <input
+            type="range"
+            min="20"
+            max="300"
+            step="10"
+            value={samplesPerRegion}
+            onChange={(e) => setSamplesPerRegion(+e.target.value)}
+          />
           <span>{samplesPerRegion}</span>
         </div>
 
